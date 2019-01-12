@@ -13,7 +13,10 @@ public:
   virtual uint64_t block_size() = 0;
 
   virtual ERR_CODE read_blocks(uint64_t start_block, uint64_t num_blocks, void *buffer, uint64_t buffer_length) = 0;
-  virtual ERR_CODE write_blocks(uint64_t start_block, uint64_t num_blocks, void *buffer, uint64_t buffer_length) = 0;
+  virtual ERR_CODE write_blocks(uint64_t start_block,
+                                uint64_t num_blocks,
+                                const void *buffer,
+                                uint64_t buffer_length) = 0;
 };
 
 #endif

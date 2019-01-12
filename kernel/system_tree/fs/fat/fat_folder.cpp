@@ -6,15 +6,38 @@
 #include "fat_fs.h"
 
 fat_filesystem::fat_folder::fat_folder(fat_dir_entry file_data_record,
-                                       std::shared_ptr<fat_filesystem> parent,
+                                       uint32_t fde_index,
+                                       std::shared_ptr<fat_filesystem> fs_parent,
+                                       std::shared_ptr<fat_folder> folder_parent,
                                        bool root_directory) :
-  parent{parent},
+  parent{fs_parent},
   is_root_dir{root_directory},
-  underlying_file{file_data_record, parent, root_directory}
+  underlying_file{file_data_record, fde_index, folder_parent, fs_parent, root_directory}
 {
   KL_TRC_ENTRY;
 
   KL_TRC_EXIT;
+}
+
+std::shared_ptr<fat_filesystem::fat_folder>
+  fat_filesystem::fat_folder::create(fat_dir_entry file_data_record,
+                                     uint32_t fde_index,
+                                     std::shared_ptr<fat_filesystem> fs_parent,
+                                     std::shared_ptr<fat_folder> folder_parent,
+                                     bool root_directory)
+{
+  KL_TRC_ENTRY;
+
+  std::shared_ptr<fat_filesystem::fat_folder> r = std::shared_ptr<fat_filesystem::fat_folder>(
+    new fat_filesystem::fat_folder(file_data_record,
+                                   fde_index,
+                                   fs_parent,
+                                   folder_parent,
+                                   root_directory));
+
+  KL_TRC_EXIT;
+
+  return r;
 }
 
 fat_filesystem::fat_folder::~fat_folder()
@@ -28,9 +51,11 @@ ERR_CODE fat_filesystem::fat_folder::get_child(const kl_string &name, std::share
   std::shared_ptr<fat_file> file_obj;
   std::shared_ptr<fat_filesystem> parent_shared;
   std::shared_ptr<fat_folder> folder_obj;
+  uint32_t found_fde_index;
   fat_dir_entry fde;
   kl_string our_name_part;
   kl_string child_name_part;
+  std::shared_ptr<ISystemTreeLeaf> direct_child;
 
   KL_TRC_ENTRY;
 
@@ -42,40 +67,93 @@ ERR_CODE fat_filesystem::fat_folder::get_child(const kl_string &name, std::share
 
     split_name(name, our_name_part, child_name_part);
 
-    ec = this->get_dir_entry(our_name_part, fde);
+    ec = this->get_dir_entry(our_name_part, fde, found_fde_index);
 
     if (ec == ERR_CODE::NO_ERROR)
     {
-      if (child_name_part == "")
+      // If there is already am extant file or folder object corresponding to this directory entry, retrieve it. We use
+      // weak pointers to allow the system to automatically reclaim memory for closed files, but this does mean results
+      // can be stale, so also remove stale results.
+      if (fde_to_child_map.contains(found_fde_index))
       {
-        KL_TRC_TRACE(TRC_LVL::FLOW, "Requested a direct dependent\n");
-        if (fde.attributes.directory)
+        KL_TRC_TRACE(TRC_LVL::FLOW, "Already got child in map\n");
+        direct_child = fde_to_child_map.search(found_fde_index).lock();
+        if (!direct_child)
         {
-          KL_TRC_TRACE(TRC_LVL::FLOW, "Requested directory\n");
-          folder_obj = std::make_shared<fat_folder>(fde, parent_shared, false);
-          child = std::dynamic_pointer_cast<ISystemTreeLeaf>(folder_obj);
+          KL_TRC_TRACE(TRC_LVL::FLOW, "Previous child object expired\n");
+          fde_to_child_map.remove(found_fde_index);
+        }
+      }
+
+
+      if (fde.attributes.directory)
+      {
+        // First, attempt to retrieve a directory object from the object we got from the cache. If we've got all the
+        // caching code correct, we should be able to get a folder object from it.
+        KL_TRC_TRACE(TRC_LVL::FLOW, "Requested directory\n");
+        if (direct_child)
+        {
+          KL_TRC_TRACE(TRC_LVL::FLOW, "Use cached object");
+          folder_obj = std::dynamic_pointer_cast<fat_folder>(direct_child);
+          ASSERT(folder_obj);
         }
         else
         {
-          KL_TRC_TRACE(TRC_LVL::FLOW, "Requested file\n");
-          file_obj = std::make_shared<fat_file>(fde, parent_shared);
-          child = std::dynamic_pointer_cast<ISystemTreeLeaf>(file_obj);
+          KL_TRC_TRACE(TRC_LVL::FLOW, "No existing folder obj, create new.\n");
+          ASSERT(!folder_obj);
+          folder_obj = fat_filesystem::fat_folder::create(fde,
+                                                          found_fde_index,
+                                                          parent_shared,
+                                                          shared_from_this(),
+                                                          false);
+        }
+
+        // We may well be looking for a grandchild, but keep a hold of this folder so it can go in the cache.
+        child = std::dynamic_pointer_cast<ISystemTreeLeaf>(folder_obj);
+        direct_child = child;
+        if (child_name_part != "")
+        {
+          KL_TRC_TRACE(TRC_LVL::FLOW, "Looking for a grandchild!\n");
+          child = nullptr;
+          ec = folder_obj->get_child(child_name_part, child);
         }
       }
       else
       {
-        KL_TRC_TRACE(TRC_LVL::FLOW, "Requested a grandchild\n");
-        if (fde.attributes.directory)
+        // As above, if there was a cache result it should be a file object.
+        KL_TRC_TRACE(TRC_LVL::FLOW, "Requested file\n");
+        if (direct_child)
         {
-          KL_TRC_TRACE(TRC_LVL::FLOW, "Get child of directory\n");
-          folder_obj = std::make_shared<fat_folder>(fde, parent_shared, false);
-          ec = folder_obj->get_child(child_name_part, child);
+          KL_TRC_TRACE(TRC_LVL::FLOW, "Use cached object");
+          file_obj = std::dynamic_pointer_cast<fat_file>(direct_child);
+          ASSERT(file_obj);
         }
         else
         {
-          KL_TRC_TRACE(TRC_LVL::FLOW, "Requested child of file - not possible\n");
+          KL_TRC_TRACE(TRC_LVL::FLOW, "No existing file obj, create new.\n");
+          ASSERT(!file_obj);
+          file_obj = std::make_shared<fat_file>(fde, found_fde_index, shared_from_this(), parent_shared);
+        }
+
+        // There are no children of normal file objects.
+        if (child_name_part == "")
+        {
+          KL_TRC_TRACE(TRC_LVL::FLOW, "Found child file\n");
+          child = std::dynamic_pointer_cast<ISystemTreeLeaf>(file_obj);
+        }
+        else
+        {
+          KL_TRC_TRACE(TRC_LVL::FLOW, "Trying to get child of file - doesn't exist.\n");
           ec = ERR_CODE::NOT_FOUND;
         }
+        direct_child = child;
+      }
+
+      // Store the child in a lookup map for use in the future.
+      if (!fde_to_child_map.contains(found_fde_index))
+      {
+        KL_TRC_TRACE(TRC_LVL::FLOW, "First time find.\n");
+        fde_to_child_map.insert(found_fde_index, direct_child);
       }
     }
   }
@@ -93,7 +171,8 @@ ERR_CODE fat_filesystem::fat_folder::get_child(const kl_string &name, std::share
 
 ERR_CODE fat_filesystem::fat_folder::add_child(const kl_string &name, std::shared_ptr<ISystemTreeLeaf> child)
 {
-  return ERR_CODE::UNKNOWN;
+  // add_child kind of represents hard-linking, and that is absolutely unsupported on a FAT filesystem.
+  return ERR_CODE::INVALID_OP;
 }
 
 ERR_CODE fat_filesystem::fat_folder::rename_child(const kl_string &old_name, const kl_string &new_name)
@@ -111,8 +190,16 @@ ERR_CODE fat_filesystem::fat_folder::create_child(const kl_string &name, std::sh
   return ERR_CODE::UNKNOWN;
 }
 
-
-ERR_CODE fat_filesystem::fat_folder::get_dir_entry(const kl_string &name, fat_dir_entry &storage)
+/// @brief Retrieve a FAT Directory Entry structure corresponding to the given name.
+///
+/// @param[in] name The name of the file to search for. Can be a FAT long name.
+///
+/// @param[out] storage Returns the retrieved FAT Directory Entry.
+///
+/// @param[out] found_idx Returns the index of the returned entry in the array of structures that forms a directory in FAT.
+///
+/// @return ERR_CODE::NO_ERROR or ERR_CODE::NOT_FOUND, as appropriate.
+ERR_CODE fat_filesystem::fat_folder::get_dir_entry(const kl_string &name, fat_dir_entry &storage, uint32_t &found_idx)
 {
   KL_TRC_ENTRY;
 
@@ -573,7 +660,39 @@ bool fat_filesystem::fat_folder::soft_compare_lfn_entries(const fat_dir_entry &a
             (kl_memcmp(a.long_fn.next_chars, b.long_fn.next_chars, 6) == 0) &&
             (kl_memcmp(a.long_fn.final_chars, b.long_fn.final_chars, 2) == 0));
 
-  KL_TRC_TRACE(TRC_LVL::FLOW, "Result: ", result, "\n");
+  KL_TRC_TRACE(TRC_LVL::EXTRA, "Result: ", result, "\n");
+  KL_TRC_EXIT;
+
+  return result;
+}
+
+/// @brief Write a FAT directory entry into the specified position in this folder's table.
+///
+/// @param index The position to write the FDE in to.
+///
+/// @param fde The FAT directory entry to write.
+///
+/// @return A suitable ERR_CODE.
+ERR_CODE fat_filesystem::fat_folder::write_fde(uint32_t index, const fat_dir_entry &fde)
+{
+  ERR_CODE result = ERR_CODE::UNKNOWN;
+  uint64_t br;
+
+  KL_TRC_ENTRY;
+
+  result = this->underlying_file.write_bytes(index * sizeof(fat_dir_entry),
+                                             sizeof(fat_dir_entry),
+                                             reinterpret_cast<const uint8_t *>(&fde),
+                                             sizeof(fat_dir_entry),
+                                             br);
+
+  if ((result == ERR_CODE::NO_ERROR) && (br != sizeof(fat_dir_entry)))
+  {
+    KL_TRC_TRACE(TRC_LVL::FLOW, "Write failed for unknown reason.\n");
+    result = ERR_CODE::UNKNOWN;
+  }
+
+  KL_TRC_TRACE(TRC_LVL::EXTRA, "Result: ", result, "\n");
   KL_TRC_EXIT;
 
   return result;

@@ -93,7 +93,7 @@ ERR_CODE virtual_disk_dummy_device::read_blocks(uint64_t start_block,
 // virtual disk, rather than the blocks used within the VDI.
 ERR_CODE virtual_disk_dummy_device::write_blocks(uint64_t start_block,
                                                  uint64_t num_blocks,
-                                                 void *buffer,
+                                                 const void *buffer,
                                                  uint64_t buffer_length)
 {
   ERR_CODE return_val = ERR_CODE::UNKNOWN;

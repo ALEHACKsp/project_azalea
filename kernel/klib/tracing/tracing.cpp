@@ -175,6 +175,10 @@ void kl_trc_output_err_code_argument(ERR_CODE ec)
       msg = "Out of resource";
       break;
 
+    case ERR_CODE::OUT_OF_RANGE:
+      msg = "Out of range";
+      break;
+
     default:
       break;
   }

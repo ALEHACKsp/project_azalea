@@ -93,6 +93,11 @@ enum AZALEA_ENUM_CLASS ERR_CODE_T
    *  The provided data wasn't in a recognised format
    */
   UNRECOGNISED = 16,
+
+  /**
+   *  Part of the operation was outside of the acceptable ranges.
+   */
+  OUT_OF_RANGE = 17,
 };
 
 AZALEA_RENAME_ENUM(ERR_CODE);
