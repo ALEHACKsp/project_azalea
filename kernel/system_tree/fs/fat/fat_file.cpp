@@ -311,7 +311,7 @@ ERR_CODE fat_filesystem::fat_file::write_bytes(uint64_t start,
             }
 
             // Copy the relevant amount of data into the buffer, then write it back to disk.
-            kl_memcpy(buffer + write_offset, sector_buffer.get() + write_offset, bytes_from_this_sector);
+            kl_memcpy(buffer + bytes_written_so_far, sector_buffer.get() + write_offset, bytes_from_this_sector);
             ec = parent_ptr->_storage->write_blocks(write_sector_num,
                                                     1,
                                                     sector_buffer.get(),
@@ -504,12 +504,12 @@ ERR_CODE fat_filesystem::fat_file::set_file_size_no_write(uint64_t file_size)
     }
 
     result = ERR_CODE::NO_ERROR;
+    cluster_number = this->_file_record.first_cluster_high;
+    cluster_number <<= 16;
+    cluster_number |= this->_file_record.first_cluster_low;
     if (new_chain_length != old_chain_length)
     {
       KL_TRC_TRACE(TRC_LVL::FLOW, "Adjust file cluster chain length\n");
-      cluster_number = this->_file_record.first_cluster_high;
-      cluster_number <<= 16;
-      cluster_number |= this->_file_record.first_cluster_low;
       result = parent_ptr->change_file_chain_length(cluster_number, old_chain_length, new_chain_length);
     }
 
@@ -529,7 +529,7 @@ ERR_CODE fat_filesystem::fat_file::set_file_size_no_write(uint64_t file_size)
       }
 
       this->_file_record.file_size = file_size;
-      folder_parent->write_fde(file_record_index, this->_file_record);
+      result = folder_parent->write_fde(file_record_index, this->_file_record);
     }
     else
     {

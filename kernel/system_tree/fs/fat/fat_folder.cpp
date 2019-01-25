@@ -316,6 +316,7 @@ ERR_CODE fat_filesystem::fat_folder::get_dir_entry(const kl_string &name, fat_di
   }
 
   KL_TRC_TRACE(TRC_LVL::EXTRA, "Disk cluster: ", storage.first_cluster_high, " / ", storage.first_cluster_low, "\n");
+  found_idx = cur_entry_idx;
 
   KL_TRC_TRACE(TRC_LVL::EXTRA, "Result: ", ret_code, "\n");
   KL_TRC_EXIT;
