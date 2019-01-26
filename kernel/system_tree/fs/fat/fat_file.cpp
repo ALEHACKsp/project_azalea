@@ -474,7 +474,14 @@ ERR_CODE fat_filesystem::fat_file::set_file_size_no_write(uint64_t file_size)
   }
   else if (file_size > UINT32_MAX)
   {
+    // This is because the size of a FAT file must fit into a 32-bit number.
     KL_TRC_TRACE(TRC_LVL::FLOW, "File size too large\n");
+    result = ERR_CODE::INVALID_PARAM;
+  }
+  else if ((this->_file_record.attributes.directory == 1) && (file_size > (UINT16_MAX * 32)))
+  {
+    // Directories can only contain 65535 directory entries, each of 32 bytes.
+    KL_TRC_TRACE(TRC_LVL::FLOW, "Directory size is too big\n");
     result = ERR_CODE::INVALID_PARAM;
   }
   else
