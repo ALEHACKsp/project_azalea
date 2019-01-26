@@ -1,4 +1,10 @@
 /// @brief Code handling folders on a FAT filesystem.
+///
+// Known defects:
+// - We ignore the fact that the first character of a name being 0xE5 means that the entry is free, which might allow
+//   for some optimisation.
+// - We ignore the translation between 0x05 and 0xE5 for Kanji.
+// - No attempt is made to deal with the access/write dates or Archive flags.
 
 //#define ENABLE_TRACING
 
@@ -238,6 +244,16 @@ ERR_CODE fat_filesystem::fat_folder::get_dir_entry(const kl_string &name, fat_di
 
     if (ret_code == ERR_CODE::NO_ERROR)
     {
+      // If the first character of a FAT entry is 0x00, then there are no further entries to examine. This is a
+      // deliberate optimisation in the FAT spec.
+      if (cur_entry.name[0] == 0)
+      {
+        KL_TRC_TRACE(TRC_LVL::FLOW, "No further entries!\n")
+        continue_looking = false;
+        ret_code = ERR_CODE::NOT_FOUND;
+        break;
+      }
+
       if (!is_long_name)
       {
         KL_TRC_TRACE(TRC_LVL::FLOW, "Examining: ", (const char *)cur_entry.name, "\n");
