@@ -132,27 +132,14 @@ ERR_CODE fat_filesystem::get_child(const kl_string &name, std::shared_ptr<ISyste
   KL_TRC_ENTRY;
 
   ERR_CODE ec = ERR_CODE::UNKNOWN;
-  fat_dir_entry fde;
   std::shared_ptr<fat_file> file_obj;
   kl_string first_part;
   kl_string second_part;
 
   // We create an object corresponding to the root directory here, because it relies on a shared
   // pointer to this object, so it can't be created in this class's constructor.
-  if (!root_directory)
-  {
-    KL_TRC_TRACE(TRC_LVL::FLOW, "Create root directory.\n");
-    kl_memset(&fde, 0, sizeof(fat_dir_entry));
-    if (this->type == FAT_TYPE::FAT32)
-    {
-      fde.first_cluster_high = bpb_32.root_cluster >> 16;
-      fde.first_cluster_low = bpb_32.root_cluster & 0xFFFF;
-      fde.attributes.directory = 1;
-    }
-    root_directory = fat_filesystem::fat_folder::create(fde, 0, shared_from_this(), nullptr, true);
-  }
 
-  ec = root_directory->get_child(name, child);
+  ec = get_root_directory()->get_child(name, child);
 
   KL_TRC_TRACE(TRC_LVL::EXTRA, "Result: ", ec, "\n");
   KL_TRC_EXIT;
@@ -176,7 +163,52 @@ ERR_CODE fat_filesystem::delete_child(const kl_string &name)
 
 ERR_CODE fat_filesystem::create_child(const kl_string &name, std::shared_ptr<ISystemTreeLeaf> &child)
 {
-  return ERR_CODE::UNKNOWN;
+  ERR_CODE result;
+  kl_string first_part;
+  kl_string last_part;
+  std::shared_ptr<fat_folder> create_spot;
+  std::shared_ptr<ISystemTreeLeaf> leaf;
+
+  KL_TRC_ENTRY;
+
+  split_name(name, first_part, last_part, true);
+
+  if (last_part == "")
+  {
+    KL_TRC_TRACE(TRC_LVL::FLOW, "Create direct child\n");
+    last_part = first_part;
+    create_spot = this->get_root_directory();
+    result = ERR_CODE::NO_ERROR;
+  }
+  else
+  {
+    result = get_child(first_part, leaf);
+    if (result == ERR_CODE::NO_ERROR)
+    {
+      KL_TRC_TRACE(TRC_LVL::FLOW, "Found child... ");
+      create_spot = std::dynamic_pointer_cast<fat_folder>(leaf);
+      if (create_spot)
+      {
+        KL_TRC_TRACE(TRC_LVL::FLOW, "is folder\n");
+      }
+      else
+      {
+        KL_TRC_TRACE(TRC_LVL::FLOW, "is not folder\n");
+        result = ERR_CODE::INVALID_OP;
+      }
+    }
+  }
+
+  if ((create_spot) && (result == ERR_CODE::NO_ERROR))
+  {
+    KL_TRC_TRACE(TRC_LVL::FLOW, "is folder.\n");
+    result = create_spot->create_child(last_part, child);
+  }
+
+  KL_TRC_TRACE(TRC_LVL::EXTRA, "Result: ", result, "\n");
+  KL_TRC_EXIT;
+
+  return result;
 }
 
 namespace
@@ -703,4 +735,29 @@ ERR_CODE fat_filesystem::select_free_cluster(uint64_t &free_cluster)
   KL_TRC_TRACE(TRC_LVL:EXTRA, "Result: ", result, "\n");
   KL_TRC_EXIT;
   return result;
+}
+
+/// @brief
+std::shared_ptr<fat_filesystem::fat_folder> &fat_filesystem::get_root_directory()
+{
+  fat_dir_entry fde;
+
+  KL_TRC_ENTRY;
+
+  if (!root_directory)
+  {
+    KL_TRC_TRACE(TRC_LVL::FLOW, "Create root directory.\n");
+    kl_memset(&fde, 0, sizeof(fat_dir_entry));
+    if (this->type == FAT_TYPE::FAT32)
+    {
+      fde.first_cluster_high = bpb_32.root_cluster >> 16;
+      fde.first_cluster_low = bpb_32.root_cluster & 0xFFFF;
+      fde.attributes.directory = 1;
+    }
+    root_directory = fat_filesystem::fat_folder::create(fde, 0, shared_from_this(), nullptr, true);
+  }
+
+  KL_TRC_EXIT;
+
+  return root_directory;
 }

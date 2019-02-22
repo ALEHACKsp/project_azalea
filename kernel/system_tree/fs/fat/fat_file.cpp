@@ -31,18 +31,47 @@ fat_filesystem::fat_file::fat_file(fat_dir_entry file_data_record,
     is_small_fat_root_dir{root_directory_file && !(fs_parent->type == FAT_TYPE::FAT32)},
     file_record_index{fde_index}
 {
+  uint32_t cluster_count = 0;
+  uint64_t cluster_num;
+
   KL_TRC_ENTRY;
 
   ASSERT(fs_parent != nullptr);
 
-  // If this is a FAT12/FAT16 root directory then file_data_record need not be valid. In which case, we can populate it
-  // with some values that we compute that might be useful elsewhere.
-  if (is_small_fat_root_dir)
+  if (_file_record.attributes.directory || is_root_directory)
   {
-    KL_TRC_TRACE(TRC_LVL::FLOW, "Small FAT root dir, re-jig file params\n");
-    _file_record.first_cluster_high = 0;
-    _file_record.first_cluster_low = 0;
-    _file_record.file_size = (fs_parent->root_dir_sector_count * fs_parent->shared_bpb->bytes_per_sec);
+    KL_TRC_TRACE(TRC_LVL::FLOW, "Found directory, calculate size\n");
+
+    if (is_root_directory)
+    {
+      KL_TRC_TRACE(TRC_LVL::FLOW, "Fill in directory attribute for later use.\n");
+      _file_record.attributes.directory = 1;
+    }
+
+    // If this is a FAT12/FAT16 root directory then file_data_record need not be valid. In which case, we can populate
+    // it with some values that we compute that might be useful elsewhere.
+    if (is_small_fat_root_dir)
+    {
+      KL_TRC_TRACE(TRC_LVL::FLOW, "Small FAT root dir, re-jig file params\n");
+      _file_record.first_cluster_high = 0;
+      _file_record.first_cluster_low = 0;
+      _file_record.file_size = (fs_parent->root_dir_sector_count * fs_parent->shared_bpb->bytes_per_sec);
+    }
+    else
+    {
+      // To calculate the effective size of this directory, count the number of clusters that make it up.
+      cluster_num = (_file_record.first_cluster_high << 16) | _file_record.first_cluster_low;
+
+      while (fs_parent->is_normal_cluster_number(cluster_num))
+      {
+        cluster_num = fs_parent->read_fat_entry(cluster_num);
+        cluster_count++;
+      }
+
+      _file_record.file_size = cluster_count *
+                               fs_parent->shared_bpb->secs_per_cluster *
+                               fs_parent->shared_bpb->bytes_per_sec;
+    }
   }
 
   KL_TRC_EXIT;
@@ -80,25 +109,20 @@ ERR_CODE fat_filesystem::fat_file::read_bytes(uint64_t start,
     ec = ERR_CODE::INVALID_PARAM;
   }
 
-  // The file size record for directories is always zero, for some reason, so skip these checks and just rely on not
-  // being able to find the correct cluster to stop us reading random bits of disk.
-  if (!this->_file_record.attributes.directory)
+  if (start > this->_file_record.file_size)
   {
-    if (start > this->_file_record.file_size)
-    {
-      KL_TRC_TRACE(TRC_LVL::ERROR, "Start point must be within the file\n");
-      ec = ERR_CODE::INVALID_PARAM;
-    }
-    if (length > this->_file_record.file_size)
-    {
-      KL_TRC_TRACE(TRC_LVL::ERROR, "length must be less than the file size\n");
-      ec = ERR_CODE::INVALID_PARAM;
-    }
-    if ((start + length) > this->_file_record.file_size)
-    {
-      KL_TRC_TRACE(TRC_LVL::ERROR, "Read area must be contained completely within file\n");
-      ec = ERR_CODE::INVALID_PARAM;
-    }
+    KL_TRC_TRACE(TRC_LVL::ERROR, "Start point must be within the file\n");
+    ec = ERR_CODE::INVALID_PARAM;
+  }
+  if (length > this->_file_record.file_size)
+  {
+    KL_TRC_TRACE(TRC_LVL::ERROR, "length must be less than the file size\n");
+    ec = ERR_CODE::INVALID_PARAM;
+  }
+  if ((start + length) > this->_file_record.file_size)
+  {
+    KL_TRC_TRACE(TRC_LVL::ERROR, "Read area must be contained completely within file\n");
+    ec = ERR_CODE::INVALID_PARAM;
   }
   if (length > buffer_length)
   {
@@ -459,6 +483,7 @@ ERR_CODE fat_filesystem::fat_file::set_file_size_no_write(uint64_t file_size)
   uint64_t cluster_number;
   uint16_t cluster_number_low;
   uint16_t cluster_number_high;
+  uint32_t bytes_per_cluster;
 
   KL_TRC_ENTRY;
 
@@ -486,6 +511,15 @@ ERR_CODE fat_filesystem::fat_file::set_file_size_no_write(uint64_t file_size)
   }
   else
   {
+    // For directories only, they always fill entire clusters, so round the file size up to the next whole cluster size
+    if (this->_file_record.attributes.directory && (file_size > 0))
+    {
+      KL_TRC_TRACE(TRC_LVL::FLOW, "Round up directory size\n");
+      bytes_per_cluster = parent_ptr->shared_bpb->bytes_per_sec * parent_ptr->shared_bpb->secs_per_cluster;
+
+      file_size = (((file_size - 1) / bytes_per_cluster) + 1) * bytes_per_cluster;
+    }
+
     if (this->_file_record.file_size > 0)
     {
       KL_TRC_TRACE(TRC_LVL::FLOW, "Calculate old num cluster\n");
@@ -535,8 +569,27 @@ ERR_CODE fat_filesystem::fat_file::set_file_size_no_write(uint64_t file_size)
         this->_file_record.first_cluster_high = cluster_number_high;
       }
 
-      this->_file_record.file_size = file_size;
+      // We use the file record to store the file size for directories, even though on disk it is always populated as
+      // zero. We don't want to write the actual size to disk, so for directories keep the value in hand until after
+      // the record is written to disk.
+      if (this->_file_record.attributes.directory)
+      {
+        KL_TRC_TRACE(TRC_LVL::FLOW, "Directories always have size 0\n");
+        this->_file_record.file_size = 0;
+      }
+      else
+      {
+        KL_TRC_TRACE(TRC_LVL::FLOW, "Files always have correct size\n");
+        this->_file_record.file_size = file_size;
+      }
+
       result = folder_parent->write_fde(file_record_index, this->_file_record);
+
+      if (this->_file_record.attributes.directory)
+      {
+        KL_TRC_TRACE(TRC_LVL::FLOW, "Keep our file size info up to date\n");
+        this->_file_record.file_size = file_size;
+      }
     }
     else
     {

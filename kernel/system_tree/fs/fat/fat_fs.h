@@ -111,13 +111,20 @@ public:
     kl_rb_tree<uint32_t, kl_string> fde_to_name_map; ///< Store a lookup from FDE numbers to names
     kl_rb_tree<kl_string, uint32_t> name_to_fde_map; ///< Store a lookup from names to FDE numbers.
 
-    ERR_CODE get_dir_entry(const kl_string &name, fat_dir_entry &storage, uint32_t &found_idx);
+    ERR_CODE get_dir_entry(const kl_string &name,
+                           fat_dir_entry &storage,
+                           uint32_t &found_idx,
+                           bool use_raw_short_name = false,
+                           const char *raw_short_name = nullptr);
     ERR_CODE read_one_dir_entry(uint32_t entry_idx, fat_dir_entry &fde);
     static bool populate_short_name(kl_string filename, char *short_name);
     static bool populate_long_name(kl_string filename, fat_dir_entry *long_name_entries, uint8_t &num_entries);
     static bool is_valid_filename_char(uint16_t ch, bool long_filename);
     static uint8_t generate_short_name_checksum(uint8_t *short_name);
     static bool soft_compare_lfn_entries(const fat_dir_entry &a, const fat_dir_entry &b);
+    bool generate_basis_name_entry(kl_string filename, fat_dir_entry &created_entry);
+    ERR_CODE add_directory_entries(fat_dir_entry *new_fdes, uint8_t num_entries);
+    void add_numeric_tail(fat_dir_entry &fde, uint8_t num_valid_chars, uint32_t suffix);
   };
 
 protected:
@@ -126,6 +133,9 @@ protected:
   std::unique_ptr<uint8_t[]> _buffer;
   std::unique_ptr<uint8_t[]> _raw_fat;
 
+  /// @brief Stores a pointer to the root directory.
+  ///
+  /// Don't use this directly, since it may not have been initialised yet - call get_root_directory() instead.
   std::shared_ptr<fat_folder> root_directory;
 
   kernel_spinlock gen_lock;
@@ -157,6 +167,9 @@ protected:
   bool is_normal_cluster_number(uint64_t cluster_num);
   uint64_t convert_cluster_to_sector_num(uint64_t cluster_num);
   bool convert_sector_to_cluster_num(uint64_t sector_num, uint64_t &cluster_num, uint16_t &offset);
+
+  // Misc
+  std::shared_ptr<fat_folder> &get_root_directory();
 };
 
 #endif

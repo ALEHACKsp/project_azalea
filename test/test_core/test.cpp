@@ -81,3 +81,8 @@ void test_spin_sleep(uint64_t sleep_time_ns)
     //spin
   }
 }
+
+std::ostream& operator<<(std::ostream& os, const ERR_CODE_T &ec)
+{
+  return os << "Error code: " << azalea_lookup_err_code(ec);
+}

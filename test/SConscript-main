@@ -46,6 +46,7 @@ files = [ "dummy_libs/processor/processor.dummy.cpp",
 
           "system_tree/fs/fat/fat_fs_1_read.cpp",
           "system_tree/fs/fat/fat_fs_2_write.cpp",
+          "system_tree/fs/fat/fat_fs_3_create.cpp",
 
           "system_tree/fs/mem/mem_fs_1_basic.cpp",
           "system_tree/fs/mem/mem_fs_2_syscall.cpp",

@@ -102,4 +102,11 @@ enum AZALEA_ENUM_CLASS ERR_CODE_T
 
 AZALEA_RENAME_ENUM(ERR_CODE);
 
+const char *azalea_lookup_err_code(const ERR_CODE ec);
+
+#ifdef AZALEA_TEST_CODE
+#include <iostream>
+std::ostream& operator<<(std::ostream& os, const ERR_CODE_T &ec);
+#endif
+
 #endif
